@@ -1,0 +1,275 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Bright Spectrum Light Mode Tokens */
+    --bg-primary: #FBFAF7;
+    --surface: #FFFFFF;
+    --elevated: #F4F1EA;
+    --border: #E8E4DC;
+    --text: #1B2559;
+    --muted: #6B7390;
+
+    --blue: #3B82F6;
+    --coral: #FF6B57;
+    --sun: #FFB400;
+    --mint: #14C38E;
+    --sky: #22C5E8;
+    --pink: #EC4899;
+    --violet: #8B5CF6;
+
+    --primary: #3B82F6;
+    --destructive: #FF6B57;
+  }
+
+  .dark {
+    /* Bright Spectrum Dark Mode Tokens */
+    --bg-primary: #0E1426;
+    --surface: #161E36;
+    --elevated: #1E2847;
+    --border: #2B3760;
+    --text: #F1F5FF;
+    --muted: #9AA7CC;
+
+    --blue: #60A5FA;
+    --coral: #FF8A78;
+    --sun: #FFD166;
+    --mint: #34E0B0;
+    --sky: #4DD8F5;
+    --pink: #F472B6;
+    --violet: #A78BFA;
+
+    --primary: #60A5FA;
+    --destructive: #FF8A78;
+  }
+
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text);
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    @apply antialiased min-h-screen transition-colors duration-200 selection:bg-blue-500 selection:text-white;
+  }
+
+  .dark body {
+    background-color: #0E1426;
+    color: #F1F5FF;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Outfit', 'Plus Jakarta Sans', sans-serif;
+  }
+
+  /* Form controls in dark mode */
+  .dark select option {
+    background-color: #161E36;
+    color: #F1F5FF;
+  }
+}
+
+/* Neutral Shadows in Light Mode & Clean 1px Borders in Dark Mode (No colored glow) */
+.shadow-card,
+.shadow-soft {
+  box-shadow: 0 2px 12px -2px rgba(27, 37, 89, 0.06);
+}
+
+.dark .shadow-sm,
+.dark .shadow,
+.dark .shadow-md,
+.dark .shadow-lg,
+.dark .shadow-xl,
+.dark .shadow-2xl,
+.dark .shadow-soft-violet,
+.dark .shadow-glow-violet,
+.dark .shadow-card {
+  box-shadow: 0 0 0 1px #2B3760 !important;
+}
+
+/* Bright Spectrum Theme Surface & Text Normalization */
+.dark .border-neutral-border {
+  border-color: #2B3760 !important;
+}
+
+.dark .text-neutral-muted {
+  color: #9AA7CC !important;
+}
+
+.dark .text-ink {
+  color: #F1F5FF !important;
+}
+
+.dark .bg-neutral-bg {
+  background-color: #0E1426 !important;
+}
+
+.dark .bg-white {
+  background-color: #161E36 !important;
+}
+
+/* Strict WCAG AA Text Contrast Rules:
+   - Text on coral, sun, mint, sky, and pink fills must be navy #1B2559
+   - White text ONLY on blue and violet fills */
+.bg-coral,
+.bg-coral-400,
+.bg-coral-500,
+.badge-coral {
+  background-color: var(--coral) !important;
+  color: #1B2559 !important;
+}
+
+.bg-sun,
+.bg-sun-400,
+.bg-sun-500,
+.bg-warm,
+.badge-sun {
+  background-color: var(--sun) !important;
+  color: #1B2559 !important;
+}
+
+.bg-mint,
+.bg-mint-400,
+.bg-mint-500,
+.bg-cool,
+.badge-mint {
+  background-color: var(--mint) !important;
+  color: #1B2559 !important;
+}
+
+.bg-sky,
+.bg-sky-400,
+.bg-sky-500,
+.badge-sky {
+  background-color: var(--sky) !important;
+  color: #1B2559 !important;
+}
+
+.bg-pink,
+.bg-pink-400,
+.bg-pink-500,
+.badge-pink {
+  background-color: var(--pink) !important;
+  color: #1B2559 !important;
+}
+
+.bg-blue,
+.bg-blue-500,
+.bg-blue-600,
+.badge-blue {
+  background-color: var(--blue) !important;
+  color: #FFFFFF !important;
+}
+
+.bg-violet,
+.bg-violet-500,
+.bg-violet-600,
+.badge-violet {
+  background-color: var(--violet) !important;
+  color: #FFFFFF !important;
+}
+
+.border-blue { border-color: var(--blue) !important; }
+.border-coral { border-color: var(--coral) !important; }
+.border-sun { border-color: var(--sun) !important; }
+.border-mint { border-color: var(--mint) !important; }
+.border-sky { border-color: var(--sky) !important; }
+.border-pink { border-color: var(--pink) !important; }
+.border-violet { border-color: var(--violet) !important; }
+
+.text-blue { color: var(--blue) !important; }
+.text-coral { color: var(--coral) !important; }
+.text-sun { color: var(--sun) !important; }
+.text-mint { color: var(--mint) !important; }
+.text-sky { color: var(--sky) !important; }
+.text-pink { color: var(--pink) !important; }
+.text-violet { color: var(--violet) !important; }
+
+/* Gradients: same-hue pairs only */
+.bg-gradient-hero {
+  background-image: linear-gradient(135deg, #3B82F6 0%, #22C5E8 100%) !important;
+  color: #FFFFFF !important;
+}
+
+.bg-gradient-focus {
+  background-image: linear-gradient(135deg, #FF6B57 0%, #FFB400 100%) !important;
+  color: #1B2559 !important;
+}
+
+.bg-gradient-planner {
+  background-image: linear-gradient(135deg, #14C38E 0%, #22C5E8 100%) !important;
+  color: #1B2559 !important;
+}
+
+.bg-gradient-flashcard {
+  background-image: linear-gradient(135deg, #FF6B57 0%, #EC4899 100%) !important;
+  color: #FFFFFF !important;
+}
+
+.bg-gradient-streak {
+  background-image: linear-gradient(135deg, #FFB400 0%, #FF6B57 100%) !important;
+  color: #1B2559 !important;
+}
+
+.bg-gradient-signature {
+  background-image: linear-gradient(135deg, #3B82F6 0%, #22C5E8 100%) !important;
+  color: #FFFFFF !important;
+}
+
+/* Accessible focus ring in primary blue */
+*:focus-visible {
+  outline: 2px solid #3B82F6;
+  outline-offset: 2px;
+}
+
+.dark *:focus-visible {
+  outline: 2px solid #60A5FA;
+}
+
+/* 3D Flashcard helpers */
+.perspective-1000 {
+  perspective: 1000px;
+}
+.transform-style-preserve-3d {
+  transform-style: preserve-3d;
+}
+.backface-hidden {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+.rotate-y-180 {
+  transform: rotateY(180deg);
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(107, 115, 144, 0.25);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(107, 115, 144, 0.4);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(154, 167, 204, 0.2);
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(154, 167, 204, 0.35);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
