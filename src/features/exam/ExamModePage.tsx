@@ -36,6 +36,7 @@ import {
   generateMultiMaterialExam,
   ExamSimulationQuestion
 } from '@/lib/examSimulationEngine'
+import { sanitizeQuestions } from '@/lib/questionSanitizer'
 import { MaterialPassageViewerModal } from '@/components/materials/MaterialPassageViewerModal'
 import { ambientAudio } from '@/lib/ambientAudio'
 import type { Material, ExamSimulationAttempt, ExamQuestionResult } from '@/types/database'
@@ -206,7 +207,7 @@ export const ExamModePage: React.FC = () => {
         totalQuestions: numQ,
       })
 
-      setQuestions(generated.questions)
+      setQuestions(sanitizeQuestions(generated.questions))
       setExamTitle(generated.title)
       setCurrentIndex(0)
       setAnswers({})

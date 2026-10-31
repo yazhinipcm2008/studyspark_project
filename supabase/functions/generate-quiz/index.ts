@@ -31,42 +31,261 @@ async function authenticateUser(req: Request) {
   return { user, supabase: client }
 }
 
-function generateQuizQuestionsLocally(sourceText: string, count: number, questionType: string, subject: string) {
-  const questions: any[] = []
+interface QuizQuestionItem {
+  question: string
+  options: string[]
+  correct_answer: string
+  explanation: string
+  topic: string
+}
+
+const BOGUS_PATTERNS = [
+  /high-impedance/i,
+  /asynchronous\s+(?:latch|clock|condition)/i,
+  /inverted\s+feedback/i,
+  /None of the\s+(?:defined|above|parameters)/i,
+  /standard\s+non-blocking/i,
+  /sequential\s+latch/i,
+]
+
+function sanitizeAndRefineQuestion(q: any, subject: string, allAnswers: string[]): QuizQuestionItem {
+  let question = (q.question || q.question_text || '').trim()
+  let correct = (q.correct_answer || '').trim()
+
+  // 1. Detect if question quotes a raw line or formula
+  const quoteMatch = question.match(
+    /(?:Which of the following (?:correctly )?describes|Explain the concept|Define or explain):\s*["']?([^"']+)["']?\??/i
+  )
+
+  if (quoteMatch && quoteMatch[1]) {
+    const raw = quoteMatch[1].trim()
+    if (raw.includes(':')) {
+      const parts = raw.split(':')
+      const term = parts[0].trim()
+      const detail = parts.slice(1).join(':').trim()
+
+      if (detail.includes('->')) {
+        question = `In ${subject}, what is the correct stage execution sequence for "${term}"?`
+        correct = detail.replace(/\s*\.\.\.\s*$/, '').trim()
+      } else {
+        question = `What is the primary role or definition of "${term}"?`
+        correct = detail.replace(/\s*\.\.\.\s*$/, '').trim()
+      }
+    } else if (raw.includes('->')) {
+      question = `What is the correct sequential order of stages for instruction execution in ${subject}?`
+      correct = raw.replace(/\s*\.\.\.\s*$/, '').trim()
+    } else {
+      question = `Which of the following statements accurately characterizes "${raw.slice(0, 55)}"?`
+    }
+  } else if (question.startsWith('What is ') && question.includes(':')) {
+    const parts = question.replace(/^What is /i, '').split(':')
+    question = `What is the primary definition or function of "${parts[0].trim()}"?`
+    if (parts[1]) {
+      correct = parts.slice(1).join(':').replace(/\s*\.\.\.\s*$/, '').trim()
+    }
+  }
+
+  // 2. Clean correct answer if it redundantly includes 'Term: ...'
+  if (correct.includes(':') && !correct.slice(0, 25).includes('->')) {
+    const parts = correct.split(':')
+    if (parts[0].length < 35 && parts[1].length > 5) {
+      correct = parts.slice(1).join(':').trim()
+    }
+  }
+  correct = correct.replace(/\s*\.\.\.\s*$/, '').trim()
+  if (correct.length > 115) {
+    correct = correct.slice(0, 110) + '...'
+  }
+
+  // 3. Purge bogus distractors
+  const options: string[] = [correct]
+
+  for (const opt of q.options || []) {
+    const cleanOpt = opt.replace(/\s*\.\.\.\s*$/, '').trim()
+    const isBogus = BOGUS_PATTERNS.some(p => p.test(cleanOpt))
+    if (!isBogus && cleanOpt && cleanOpt !== correct && !options.includes(cleanOpt)) {
+      options.push(cleanOpt.length > 115 ? cleanOpt.slice(0, 110) + '...' : cleanOpt)
+    }
+  }
+
+  // If answer is stage sequence (arrows), add realistic stage permutations
+  if (correct.includes('->')) {
+    const stageVariants = [
+      'I1 -> ID -> IF -> MEM -> EX',
+      'I1 -> IF -> EX -> ID -> MEM',
+      'I1 -> IF -> ID -> MEM -> EX',
+      'I1 -> MEM -> IF -> ID -> EX',
+    ]
+    for (const v of stageVariants) {
+      if (options.length < 4 && !options.includes(v) && v !== correct) {
+        options.push(v)
+      }
+    }
+  }
+
+  // Distractors from other questions in this set
+  for (const other of allAnswers) {
+    if (options.length < 4 && other !== correct && !options.includes(other) && other.length > 5) {
+      options.push(other.length > 115 ? other.slice(0, 110) + '...' : other)
+    }
+  }
+
+  // Academic domain fallbacks
+  const academicFallbacks = [
+    'Executes instruction cycles serially without overlapping functional hardware stages.',
+    'Increases total instruction throughput while individual stage latency remains fixed.',
+    'Eliminates structural hazards by dynamic speculative register re-allocation.',
+    'Introduces stall cycles whenever branch target address is unresolved.',
+  ]
+  for (const af of academicFallbacks) {
+    if (options.length < 4 && !options.includes(af) && af !== correct) {
+      options.push(af)
+    }
+  }
+
+  return {
+    question,
+    options: options.slice(0, 4).sort(() => 0.5 - Math.random()),
+    correct_answer: correct,
+    explanation: q.explanation || `Core concept in ${subject}: ${correct}`,
+    topic: q.topic || subject,
+  }
+}
+
+function generateQuizQuestionsLocally(sourceText: string, count: number, questionType: string, subject: string): QuizQuestionItem[] {
   const clean = sourceText.replace(/\r\n/g, '\n').trim()
   const lines = clean.split('\n').map(l => l.trim()).filter(Boolean)
 
+  interface ConceptPair {
+    term: string
+    definition: string
+    isArrow: boolean
+  }
+
+  const concepts: ConceptPair[] = []
+
+  // Extract structured concepts:
+  for (const line of lines) {
+    // 1. Colon pattern: 'Term: Definition' or 'Without pipelining: ...'
+    const colonMatch = line.match(/^([•\-\*]?\s*)([^:]{2,55})\s*:\s*(.+)$/i)
+    if (colonMatch && colonMatch[2] && colonMatch[3]) {
+      const term = colonMatch[2].replace(/^[•\-\*]\s*/, '').trim()
+      const def = colonMatch[3].trim()
+      if (term.length >= 2 && def.length >= 4) {
+        concepts.push({
+          term,
+          definition: def,
+          isArrow: def.includes('->'),
+        })
+        continue
+      }
+    }
+
+    // 2. Definition sentences: 'X is/are Y'
+    if (/\s+(?:is|are|was|were)\s+/i.test(line) && line.length < 250) {
+      const parts = line.split(/\s+(?:is|are|was|were)\s+/i)
+      if (parts.length >= 2 && parts[0].length < 45 && parts[1].length > 10) {
+        const term = parts[0].replace(/^[•\-\*]\s*/, '').trim()
+        concepts.push({
+          term,
+          definition: parts.slice(1).join(' is/are ').trim(),
+          isArrow: false,
+        })
+        continue
+      }
+    }
+
+    // 3. Arrow pipelines on their own line
+    if (line.includes('->') && line.length < 150) {
+      concepts.push({
+        term: subject || 'Pipeline Stage Sequence',
+        definition: line,
+        isArrow: true,
+      })
+    }
+  }
+
+  // Fallback to meaningful lines if no explicit definitions were matched
+  if (concepts.length === 0) {
+    for (const line of lines) {
+      if (line.length > 15 && line.length < 200) {
+        concepts.push({
+          term: line.slice(0, 35),
+          definition: line,
+          isArrow: line.includes('->'),
+        })
+      }
+    }
+  }
+
+  if (concepts.length === 0) {
+    concepts.push({
+      term: subject,
+      definition: `Fundamental concept and operational workflow of ${subject}`,
+      isArrow: false,
+    })
+  }
+
+  const allAnswers = concepts.map(c => {
+    let d = c.definition.trim()
+    if (d.includes(':') && !d.includes('->')) {
+      const sp = d.split(':')
+      if (sp[0].length < 35 && sp[1].length > 5) d = sp[1].trim()
+    }
+    return d.length > 105 ? d.slice(0, 100) + '...' : d
+  })
+
+  const rawQuestions: any[] = []
+
   for (let idx = 0; idx < count; idx++) {
-    const line = lines[idx % lines.length] || `Core concept in ${subject}`
-    
+    const concept = concepts[idx % concepts.length]
+    let cleanDef = concept.definition.trim()
+    if (cleanDef.includes(':') && !cleanDef.includes('->')) {
+      const sp = cleanDef.split(':')
+      if (sp[0].length < 35 && sp[1].length > 5) cleanDef = sp[1].trim()
+    }
+    const correctAns = cleanDef.length > 105 ? cleanDef.slice(0, 100) + '...' : cleanDef
+
     if (questionType === 'true_false') {
-      questions.push({
-        question: `True or False: According to the study material, "${line.slice(0, 80)}" is an accurate statement?`,
+      const isTrue = idx % 2 === 0
+      const prompt = isTrue
+        ? `In ${subject}, is it accurate that "${concept.term}" involves: ${correctAns}?`
+        : `In ${subject}, is it accurate that "${concept.term}" operates by completely bypassing sequential hardware stages without clock coordination?`
+
+      rawQuestions.push({
+        question: prompt,
         options: ['True', 'False'],
-        correct_answer: 'True',
-        explanation: line,
+        correct_answer: isTrue ? 'True' : 'False',
+        explanation: concept.definition,
         topic: subject,
       })
     } else {
-      const correct = line.length > 70 ? line.slice(0, 65) + '...' : line
-      const options = [
-        correct,
-        'None of the defined operations or states apply.',
-        'An asynchronous latch condition with inverted feedback.',
-        'A high-impedance state without active logical transfer.',
-      ].sort(() => 0.5 - Math.random())
+      let qPrompt = ''
+      if (concept.isArrow) {
+        qPrompt = `In ${subject}, what is the correct stage execution sequence for "${concept.term}"?`
+      } else {
+        qPrompt = `What is the primary definition or function of "${concept.term}"?`
+      }
 
-      questions.push({
-        question: `Which of the following correctly describes: "${line.slice(0, 60)}"?`,
-        options,
-        correct_answer: correct,
-        explanation: line,
+      const distractors = allAnswers.filter(a => a !== correctAns && a.length > 5)
+      const chosenDistractors: string[] = []
+      for (const d of distractors) {
+        if (chosenDistractors.length < 3 && !chosenDistractors.includes(d)) {
+          chosenDistractors.push(d)
+        }
+      }
+
+      rawQuestions.push({
+        question: qPrompt,
+        options: [correctAns, ...chosenDistractors],
+        correct_answer: correctAns,
+        explanation: concept.definition,
         topic: subject,
       })
     }
   }
 
-  return questions
+  return rawQuestions.map(q => sanitizeAndRefineQuestion(q, subject, allAnswers))
 }
 
 serve(async (req: Request) => {
@@ -123,7 +342,7 @@ serve(async (req: Request) => {
             model: Deno.env.get('CLAUDE_MODEL') || 'claude-3-5-sonnet-20241022',
             max_tokens: 3500,
             temperature: 0.2,
-            system: `Generate ${numQuestions} ${questionType} quiz questions (${difficulty} difficulty). Output strictly JSON: {"questions": [{"question": "...", "options": ["..."], "correct_answer": "...", "explanation": "...", "topic": "..."}]}`,
+            system: `Generate ${numQuestions} academic ${questionType} quiz questions (${difficulty} difficulty). Ensure clear, natural question prompts, concise answers, and realistic academic distractors. Output strictly JSON: {"questions": [{"question": "...", "options": ["..."], "correct_answer": "...", "explanation": "...", "topic": "..."}]}`,
             messages: [{ role: 'user', content: sourceText.slice(0, 30000) }],
           }),
         })
@@ -144,6 +363,9 @@ serve(async (req: Request) => {
 
     if (questions.length === 0) {
       questions = generateQuizQuestionsLocally(sourceText, numQuestions, questionType, quizSubject)
+    } else {
+      const allAns = questions.map((q: any) => q.correct_answer || '').filter(Boolean)
+      questions = questions.map((q: any) => sanitizeAndRefineQuestion(q, quizSubject, allAns))
     }
 
     let quizId = crypto.randomUUID()

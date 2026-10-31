@@ -1,5 +1,6 @@
 import { supabase } from '@/lib/supabase'
 import { getOfflineDB } from '@/lib/offline/db'
+import { sanitizeQuestions } from '@/lib/questionSanitizer'
 import type { StudyPlan, StudyTask, FlashcardSet, Flashcard } from '@/types/database'
 
 export interface GeneratedCard {
@@ -314,7 +315,7 @@ export async function generateQuizLocally(params: {
   }
 
   const cards = extractFlashcardsFromText(sourceText, numQuestions, quizSubject)
-  const questions: GeneratedQuestion[] = cards.map((card, idx) => {
+  const rawQuestions: GeneratedQuestion[] = cards.map((card, idx) => {
     let sourcePassage: string | null = null
     let sourcePage: number | null = null
 
@@ -359,18 +360,72 @@ export async function generateQuizLocally(params: {
       }
     }
 
-    // Multiple Choice
-    const correctOption = card.back.length > 90 ? card.back.slice(0, 85) + '...' : card.back
-    const distractors = [
-      'None of the above conditions apply.',
-      'A sequential latch condition with asynchronous feedback.',
-      'A high-impedance state with no active logical transfer.',
+    // Multiple Choice: Formulate natural question and context-aware choices
+    let questionText = card.front
+    if (questionText.startsWith('Explain the concept: "') || questionText.startsWith('Which of the following correctly describes: "')) {
+      const match = questionText.match(/["']([^"']+)["']/)
+      if (match) {
+        const raw = match[1]
+        if (raw.includes(':')) {
+          const parts = raw.split(':')
+          questionText = `What is the primary role or definition of "${parts[0].trim()}"?`
+        } else {
+          questionText = `Which of the following statements accurately characterizes "${raw.slice(0, 55)}"?`
+        }
+      }
+    } else if (questionText.startsWith('What is ')) {
+      const term = questionText.replace(/^What is /i, '').replace(/[?]$/, '').trim()
+      questionText = `In ${quizSubject || 'this subject'}, what is the definition or primary characteristic of "${term}"?`
+    }
+
+    // Clean correct answer
+    let cleanAnswer = card.back.trim()
+    const colonSplit = cleanAnswer.split(/^[^:]{2,35}:\s*/)
+    if (colonSplit.length > 1 && colonSplit[1].length > 5) {
+      cleanAnswer = colonSplit[1].trim()
+    }
+    const correctOption = cleanAnswer.length > 110 ? cleanAnswer.slice(0, 105) + '...' : cleanAnswer
+
+    // Context-aware distractors from other cards in this same quiz/material!
+    const otherAnswers = cards
+      .filter((_, oIdx) => oIdx !== idx)
+      .map(c => {
+        const cs = c.back.trim().split(/^[^:]{2,35}:\s*/)
+        return cs.length > 1 && cs[1].length > 5 ? cs[1].trim() : c.back.trim()
+      })
+      .filter(b => b.length > 10 && b !== cleanAnswer)
+
+    const selectedDistractors: string[] = []
+    const shuffledOthers = [...otherAnswers].sort(() => 0.5 - Math.random())
+
+    shuffledOthers.forEach(ans => {
+      if (selectedDistractors.length < 3) {
+        const shortAns = ans.length > 110 ? ans.slice(0, 105) + '...' : ans
+        if (!selectedDistractors.includes(shortAns) && shortAns !== correctOption) {
+          selectedDistractors.push(shortAns)
+        }
+      }
+    })
+
+    // Academic domain fallbacks if few cards exist
+    const smartDomainDistractors = [
+      'Executes all instruction stages strictly sequentially without overlapping cycles.',
+      'Increases total instruction latency while keeping system clock frequency constant.',
+      'Requires complete register file write-back before the next fetch cycle can begin.',
+      'Reduces memory bus bandwidth by forcing synchronous single-issue execution.',
+      'Bypasses the decode stage using direct microcode branch prediction.'
     ]
 
-    const allOptions = [correctOption, ...distractors].sort(() => 0.5 - Math.random())
+    smartDomainDistractors.forEach(d => {
+      if (selectedDistractors.length < 3 && !selectedDistractors.includes(d) && d !== correctOption) {
+        selectedDistractors.push(d)
+      }
+    })
+
+    const allOptions = [correctOption, ...selectedDistractors.slice(0, 3)].sort(() => 0.5 - Math.random())
 
     return {
-      question_text: card.front,
+      question_text: questionText,
       options: allOptions,
       correct_answer: correctOption,
       explanation: `${card.back}${citationTag}`,
@@ -381,6 +436,8 @@ export async function generateQuizLocally(params: {
       material_title: matTitle || null,
     }
   })
+
+  const questions = sanitizeQuestions(rawQuestions)
 
   // 1. Insert quiz
   const { data: quizRecord, error: quizErr } = await supabase
@@ -673,29 +730,74 @@ export async function generateAssistantReplyLocally(params: {
   let sourcePage: number | null = null
 
   if (materialText) {
-    // Extract relevant lines
-    const lines = materialText.split('\n').filter(l => l.trim().length > 10)
-    const preview = lines.slice(0, 4).join('\n')
-    const charIndex = materialText.indexOf(preview.slice(0, 30))
-    const textBefore = charIndex !== -1 ? materialText.slice(0, charIndex) : ''
-    const pageMatches = [...textBefore.matchAll(/\[Page\s*(\d+)\]/gi)]
-    sourcePage = pageMatches.length > 0
-      ? parseInt(pageMatches[pageMatches.length - 1][1], 10)
-      : (charIndex !== -1 ? Math.floor(charIndex / 1800) + 1 : 1)
-    sourcePassage = preview
+    // Smart semantic paragraph retrieval instead of hardcoded lines.slice(0, 4)
+    const stopWords = new Set([
+      'what', 'is', 'the', 'explain', 'how', 'does', 'why', 'are', 'and', 'for', 'in', 'to', 'of',
+      'a', 'an', 'define', 'describe', 'difference', 'between', 'give', 'me', 'tell', 'about', 'can', 'you'
+    ])
 
-    reply = `### From your notes ("${materialTitle}" • Page ${sourcePage})\n`
-    reply += `${preview}\n\n`
-    reply += `[Citation: ${materialTitle} | Page ${sourcePage} | Passage: "${preview.replace(/\n+/g, ' ').slice(0, 140)}..."]\n\n`
-    reply += `### Additional Explanation\n`
-    reply += `Regarding **"${message}"**: In college-level study, mastering these foundational definitions and combinational logic operators ensures complete understanding for upcoming exams. Review the key terms, and test yourself with active recall flashcards to consolidate memory retention.`
+    const queryTokens = message
+      .toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 2 && !stopWords.has(w))
+
+    // Split document into meaningful paragraphs
+    const paragraphs = materialText
+      .split(/\n\s*\n|\n(?=[A-Z0-9\.\-\s]{3,35}:)/)
+      .map(p => p.trim())
+      .filter(p => p.length > 30)
+
+    let bestParagraph = ''
+    let bestScore = 0
+
+    paragraphs.forEach((p) => {
+      const pLower = p.toLowerCase()
+      let score = 0
+      queryTokens.forEach(token => {
+        if (pLower.includes(token)) {
+          score += 2
+          const occurrences = (pLower.match(new RegExp('\\b' + token + '\\b', 'g')) || []).length
+          score += occurrences
+        }
+      })
+
+      if (score > bestScore) {
+        bestScore = score
+        bestParagraph = p
+      }
+    })
+
+    if (bestScore > 0 && bestParagraph) {
+      const charIndex = materialText.indexOf(bestParagraph)
+      const textBefore = charIndex !== -1 ? materialText.slice(0, charIndex) : ''
+      const pageMatches = [...textBefore.matchAll(/\[Page\s*(\d+)\]/gi)]
+      sourcePage = pageMatches.length > 0
+        ? parseInt(pageMatches[pageMatches.length - 1][1], 10)
+        : (charIndex !== -1 ? Math.floor(charIndex / 1800) + 1 : 1)
+      sourcePassage = bestParagraph.slice(0, 280)
+
+      reply = `### Relevant Section from "${materialTitle}" (Page ${sourcePage})\n\n`
+      reply += `> "${bestParagraph.slice(0, 320)}${bestParagraph.length > 320 ? '...' : ''}"\n\n`
+      reply += `[Citation: ${materialTitle} | Page ${sourcePage} | Passage: "${bestParagraph.slice(0, 100)}..."]\n\n`
+      reply += `### Detailed Academic Explanation\n`
+      reply += `In response to **"${message}"**:\n`
+      reply += `• **Core Concept**: According to your lecture notes, this concept is central to understanding the principles outlined on Page ${sourcePage}.\n`
+      reply += `• **Exam Focus**: In collegiate exams, questions regarding "${message}" typically assess the mechanism described above and its practical applications.\n`
+      reply += `• **Recommended Next Step**: Practice solving related questions and generate active recall flashcards from this section to reinforce memory retention.`
+    } else {
+      reply = `### StudySpark Academic Assistant • ${materialTitle}\n\n`
+      reply += `Regarding your question: **"${message}"**\n\n`
+      reply += `1. **Conceptual Overview**: This concept relates directly to the core syllabus of **${materialTitle}**.\n`
+      reply += `2. **Key Consideration**: In collegiate engineering exams, questions on this topic test both fundamental definitions and practical derivations.\n`
+      reply += `3. **Next Step**: You can switch the dropdown above to "General Knowledge" for open-ended explanations, or create a quiz specifically for this unit to test your mastery.`
+    }
   } else {
     reply = `### StudySpark Academic Assistant\n\n`
     reply += `Regarding your question: **"${message}"**\n\n`
-    reply += `Here is a clear breakdown:\n`
-    reply += `1. **Core Concept**: Focus on the fundamental rules and mechanisms involved.\n`
-    reply += `2. **Exam Application**: Be prepared to identify both theoretical definitions and practical implementations.\n`
-    reply += `3. **Next Step**: You can generate active recall flashcards or a practice quiz directly from your study materials to reinforce this topic.`
+    reply += `1. **Core Concept**: Break the problem down into its fundamental definitions, formulas, and operating assumptions.\n`
+    reply += `2. **Exam Application**: Focus on both theoretical explanations and step-by-step problem-solving methods.\n`
+    reply += `3. **Recommended Study Strategy**: Use active recall to explain the concept in your own words, and practice solving variations of this question to build exam readiness.`
   }
 
   if (convId) {

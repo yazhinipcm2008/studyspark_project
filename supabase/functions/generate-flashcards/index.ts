@@ -38,16 +38,28 @@ function extractFlashcardsLocally(text: string, count: number, defaultTopic: str
 
   for (const line of lines) {
     if (cards.length >= count) break
+
+    // Colon match: "Term: Definition" or "Pipeline Stages: IF, ID, EX..."
     const colonMatch = line.match(/^([•\-\*]?\s*)([^:]{2,50})\s*:\s*(.+)$/i)
     if (colonMatch && colonMatch[2] && colonMatch[3]) {
       const term = colonMatch[2].replace(/^[•\-\*]\s*/, '').trim()
-      const def = colonMatch[3].trim()
+      let def = colonMatch[3].trim()
+
       if (term.length > 1 && def.length > 4) {
-        cards.push({
-          front: `What is ${term}?`,
-          back: def,
-          topic: defaultTopic,
-        })
+        if (def.includes('->')) {
+          cards.push({
+            front: `What is the execution stage sequence for "${term}"?`,
+            back: def,
+            topic: defaultTopic,
+          })
+        } else {
+          cards.push({
+            front: `What is the definition or role of "${term}"?`,
+            back: def,
+            topic: defaultTopic,
+          })
+        }
+
         if (term.includes('⊕') || term.includes('+') || term.includes('·')) {
           cards.push({
             front: `What Boolean operation does the symbol '⊕' represent?`,
@@ -61,24 +73,43 @@ function extractFlashcardsLocally(text: string, count: number, defaultTopic: str
           })
         }
       }
+      continue
+    }
+
+    // Sentence matching: "X is/are Y"
+    if (/\s+(?:is|are|was|were)\s+/i.test(line) && line.length < 220) {
+      const parts = line.split(/\s+(?:is|are|was|were)\s+/i)
+      if (parts.length >= 2 && parts[0].length < 45 && parts[1].length > 10) {
+        const term = parts[0].replace(/^[•\-\*]\s*/, '').trim()
+        cards.push({
+          front: `Define or describe: ${term}`,
+          back: line,
+          topic: defaultTopic,
+        })
+      }
     }
   }
 
-  const sentences = clean.split(/[.?!]\s+/).map(s => s.trim()).filter(s => s.length > 25 && s.length < 300)
-  for (const sentence of sentences) {
-    if (cards.length >= count) break
-    cards.push({
-      front: `Explain the concept: "${sentence.slice(0, 60)}${sentence.length > 60 ? '...' : ''}"`,
-      back: sentence,
-      topic: defaultTopic,
-    })
+  // Fallback to key concepts if count not reached
+  if (cards.length < count) {
+    const sentences = clean.split(/[.?!]\s+/).map(s => s.trim()).filter(s => s.length > 25 && s.length < 250)
+    for (const sentence of sentences) {
+      if (cards.length >= count) break
+      const firstWords = sentence.split(' ').slice(0, 5).join(' ')
+      cards.push({
+        front: `Key Concept: ${firstWords}...`,
+        back: sentence,
+        topic: defaultTopic,
+      })
+    }
   }
 
   let padIdx = 1
   while (cards.length < count) {
+    const line = lines[(padIdx - 1) % lines.length] || `Principle ${padIdx} of ${defaultTopic}`
     cards.push({
-      front: `Key Concept #${padIdx}`,
-      back: clean.slice(0, 180),
+      front: `Core Principle: ${line.slice(0, 45)}${line.length > 45 ? '...' : ''}`,
+      back: line,
       topic: defaultTopic,
     })
     padIdx++
@@ -139,7 +170,7 @@ serve(async (req: Request) => {
             model: Deno.env.get('CLAUDE_MODEL') || 'claude-3-5-sonnet-20241022',
             max_tokens: 3500,
             temperature: 0.2,
-            system: `Extract exactly ${count} active recall flashcards from text. Output strictly valid JSON: {"cards": [{"front": "...", "back": "...", "topic": "..."}]}`,
+            system: `Extract exactly ${count} active recall flashcards from text. Ensure front is a clear question and back is a concise definition/fact. Output strictly valid JSON: {"cards": [{"front": "...", "back": "...", "topic": "..."}]}`,
             messages: [{ role: 'user', content: sourceText.slice(0, 30000) }],
           }),
         })

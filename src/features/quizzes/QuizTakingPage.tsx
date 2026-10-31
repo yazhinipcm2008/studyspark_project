@@ -20,6 +20,7 @@ import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { queueOutboxAction } from '@/lib/offline/outbox'
 import { toast } from 'sonner'
+import { sanitizeQuestions } from '@/lib/questionSanitizer'
 import type { Quiz, QuizQuestion } from '@/types/database'
 import { MaterialPassageViewerModal } from '@/components/materials/MaterialPassageViewerModal'
 
@@ -77,7 +78,7 @@ export const QuizTakingPage: React.FC = () => {
           .order('position', { ascending: true })
 
         if (questErr) throw questErr
-        setQuestions(questionsData || [])
+        setQuestions(sanitizeQuestions(questionsData || []))
       } catch (err: any) {
         toast.error(err.message || 'Failed to load quiz')
         navigate('/quizzes')

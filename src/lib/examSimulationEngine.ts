@@ -1,3 +1,4 @@
+import { sanitizeQuestions } from '@/lib/questionSanitizer'
 /**
  * Multi-material Exam Simulation Engine.
  * Synthesizes comprehensive, balanced exams drawn across multiple course materials.
@@ -121,19 +122,75 @@ export async function generateMultiMaterialExam(params: GenerateExamParams): Pro
           sourcePassage = mat.extracted_text!.slice(Math.max(0, charIdx - 20), charIdx + 150).trim()
         }
 
-        const correctOption = card.back.length > 90 ? card.back.slice(0, 85) + '...' : card.back
-        const distractors = [
-          'None of the above parameters apply.',
-          'An asynchronous clock latch without sequential register hold.',
-          'An inverted feedback condition under zero electrical potential.',
-          'A standard non-blocking operational transfer.',
+        // Formulate clear, natural question text
+        let questionText = card.front
+        if (questionText.startsWith('Explain the concept: "') || questionText.startsWith('Which of the following correctly describes: "')) {
+          const match = questionText.match(/["']([^"']+)["']/)
+          if (match) {
+            const raw = match[1]
+            if (raw.includes(':')) {
+              const parts = raw.split(':')
+              questionText = `What is the primary role or definition of "${parts[0].trim()}"?`
+            } else {
+              questionText = `Which of the following statements accurately characterizes "${raw.slice(0, 55)}"?`
+            }
+          }
+        } else if (questionText.startsWith('What is ')) {
+          const term = questionText.replace(/^What is /i, '').replace(/[?]$/, '').trim()
+          questionText = `In ${mat.subject || 'this subject'}, what is the definition or primary characteristic of "${term}"?`
+        }
+
+        // Clean correct answer
+        let cleanAnswer = card.back.trim()
+        // If answer redundantly repeats "Term: ...", strip the duplicate prefix
+        const colonSplit = cleanAnswer.split(/^[^:]{2,35}:\s*/)
+        if (colonSplit.length > 1 && colonSplit[1].length > 5) {
+          cleanAnswer = colonSplit[1].trim()
+        }
+        const correctOption = cleanAnswer.length > 110 ? cleanAnswer.slice(0, 105) + '...' : cleanAnswer
+
+        // Context-aware distractors from OTHER cards in the same material!
+        const otherAnswers = cards
+          .filter((_, oIdx) => oIdx !== idx)
+          .map(c => {
+            const cs = c.back.trim().split(/^[^:]{2,35}:\s*/)
+            return cs.length > 1 && cs[1].length > 5 ? cs[1].trim() : c.back.trim()
+          })
+          .filter(b => b.length > 10 && b !== cleanAnswer)
+
+        const selectedDistractors: string[] = []
+        const shuffledOthers = [...otherAnswers].sort(() => 0.5 - Math.random())
+
+        shuffledOthers.forEach(ans => {
+          if (selectedDistractors.length < 3) {
+            const shortAns = ans.length > 110 ? ans.slice(0, 105) + '...' : ans
+            if (!selectedDistractors.includes(shortAns) && shortAns !== correctOption) {
+              selectedDistractors.push(shortAns)
+            }
+          }
+        })
+
+        // Realistic academic fallback distractors if insufficient material items exist
+        const smartDomainDistractors = [
+          'Executes all instruction stages strictly sequentially without overlapping cycles.',
+          'Increases total instruction latency while keeping system clock frequency constant.',
+          'Requires complete register file write-back before the next fetch cycle can begin.',
+          'Reduces memory bus bandwidth by forcing synchronous single-issue execution.',
+          'Bypasses the decode stage using direct microcode branch prediction.'
         ]
-        const allOptions = [correctOption, ...distractors.slice(0, 3)].sort(() => 0.5 - Math.random())
+
+        smartDomainDistractors.forEach(d => {
+          if (selectedDistractors.length < 3 && !selectedDistractors.includes(d) && d !== correctOption) {
+            selectedDistractors.push(d)
+          }
+        })
+
+        const allOptions = [correctOption, ...selectedDistractors.slice(0, 3)].sort(() => 0.5 - Math.random())
 
         candidateQuestions.push({
           id: `gen-${mat.id}-${idx}-${Date.now()}`,
           position: 0,
-          question_text: card.front,
+          question_text: questionText,
           options: allOptions,
           correct_answer: correctOption,
           topic: card.topic || mat.subject || 'General',
@@ -153,7 +210,7 @@ export async function generateMultiMaterialExam(params: GenerateExamParams): Pro
 
   // 4. Shuffle and take exact requested totalQuestions
   const shuffled = candidateQuestions.sort(() => 0.5 - Math.random())
-  const finalQuestions = shuffled.slice(0, totalQuestions).map((q, idx) => ({
+  const finalQuestions = sanitizeQuestions(shuffled.slice(0, totalQuestions)).map((q, idx) => ({
     ...q,
     position: idx + 1,
   }))

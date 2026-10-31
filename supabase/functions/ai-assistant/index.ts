@@ -114,9 +114,39 @@ serve(async (req: Request) => {
 
     if (!reply) {
       if (materialText) {
-        reply = `### Explanation for: "${message}"\n\nBased on your notes in **${materialTitle}**:\n`
-        const preview = materialText.split('\n').filter((l: string) => l.trim().length > 15).slice(0, 3).join('\n')
-        reply += `${preview}\n\n**Key Takeaway**: Master these definitions and logic rules for upcoming exams. Use active recall flashcards to reinforce memory retention.`
+        // Keyword relevance matching instead of blindly dumping top lines
+        const queryTerms = message
+          .toLowerCase()
+          .replace(/[^a-z0-9\s]/g, '')
+          .split(/\s+/)
+          .filter((w: string) => w.length > 2 && !['what', 'when', 'where', 'which', 'explain', 'tell', 'about', 'how', 'does', 'the', 'this', 'that', 'with'].includes(w))
+
+        const paragraphs = materialText
+          .split(/\n\s*\n|\n/)
+          .map((p: string) => p.trim())
+          .filter((p: string) => p.length > 20)
+
+        let bestMatch = ''
+        let bestScore = 0
+
+        for (const p of paragraphs) {
+          const lower = p.toLowerCase()
+          let score = 0
+          for (const term of queryTerms) {
+            if (lower.includes(term)) score += 1
+          }
+          if (score > bestScore) {
+            bestScore = score
+            bestMatch = p
+          }
+        }
+
+        if (bestMatch && bestScore > 0) {
+          reply = `### Explanation from ${materialTitle}\n\n**Direct Concept:**\n${bestMatch}\n\n**💡 Academic Breakdown:**\n- **Core Definition**: Master this key mechanism and its terminology.\n- **Exam Relevance**: Look out for sequential stage order, definitions, and hazard handling.\n- **Recommended Next Step**: Test yourself using flashcards or take a practice mock exam.`
+        } else {
+          const summaryPoints = paragraphs.slice(0, 3).map((p: string) => `- ${p.length > 110 ? p.slice(0, 105) + '...' : p}`).join('\n')
+          reply = `### Academic Assistant • ${materialTitle}\n\nRegarding your question: **"${message}"**:\n\nKey principles from **${materialTitle}** include:\n${summaryPoints}\n\nAsk about any specific term, stage sequence, or problem, and I'll break it down step-by-step!`
+        }
       } else {
         reply = `### Academic Assistant\n\nRegarding your question on **"${message}"**:\n\n1. **Core Concept**: Focus on the fundamental rules and relationships.\n2. **Exam Focus**: Test both conceptual understanding and problem-solving steps.\n3. **Recommended Next Step**: Generate flashcards or a practice quiz from your study materials to consolidate this topic.`
       }
